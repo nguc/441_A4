@@ -56,7 +56,8 @@ public class Router {
 		this.id = routerId;
 		this.serverName = serverName;
 		this.serverPort = serverPort;
-		this.updateInterval = updateInterval;		
+		this.updateInterval = updateInterval;
+		this.quit = false;
 	}
 
     /**
@@ -81,6 +82,7 @@ public class Router {
 			out.flush();
 			System.out.println("send " + pkt.toString());
 			
+			// read response from server
 			DvrPacket response = (DvrPacket)in.readObject();
 			try
 			{
@@ -88,15 +90,19 @@ public class Router {
 					socket.close();
 					//System.out.println("Incorrect packet. HELLO pkt not recieved");
 				}
-				
 				else if (response.sourceid != DvrPacket.SERVER) {
 					socket.close();
-					//System.out.println("Incorrect packet. Packet not from SERVER");
+					System.out.println("Incorrect packet. Packet not from SERVER");
 				}
 			} catch (Exception e) {  System.out.println("Incorrect reciveve: " + e.getMessage()); }
-		
+			
+			// get linkcost array
 			linkcost = response.getMinCost();
 			int arrLength = linkcost.length;
+			
+			for(int i = 0; i < arrLength; i++) {
+				System.out.println("linkcost[" + i + "] = " + linkcost[i] );
+			}
 			
 			// find the neighbours
 			neighbours = new boolean[arrLength];
@@ -105,6 +111,7 @@ public class Router {
 				if (i != this.id && linkcost[i] != DvrPacket.INFINITY) {
 					neighbours[i] = true;
 				}
+				System.out.println("neigbhours[" + i + "] = " + neighbours[i] );
 			}
 			
 			// determine the next hop node to reach router i
@@ -117,17 +124,24 @@ public class Router {
 				else {
 					nexthop[i] = this.id;
 				}
+				//System.out.println("nexthop[" + i + "] = " + nexthop[i] );
 			}
 			
 			// initialize min cost matrix
 			mincost = new int[arrLength][arrLength];
-			mincost[this.id] = Arrays.copyOf(linkcost, arrLength);	// min cost array of current router is equal to linkcost
-			
-			// mincost = INFINITY = 999
+			mincost[this.id] = Arrays.copyOf(linkcost, arrLength);	// min cost array of current router is equal to linkcost		
+			// set mincost for all other router to infinity
 			for (int i = 0; i < arrLength; i++) 
 			{
 				if (i != this.id) {
-					mincost[this.id][i] = DvrPacket.INFINITY;	
+					for (int j = 0; j < linkcost.length; j++)
+					mincost[i][j] = DvrPacket.INFINITY;	
+				}
+			}
+			// print to see outcome
+			for (int i = 0; i < linkcost.length; i++) {
+				for (int j = 0 ; j < linkcost.length; j++) {
+					System.out.println("mincost[" + i + "][" + j + "] = " + mincost[i][j]);
 				}
 			}
 			
@@ -137,29 +151,32 @@ public class Router {
 			// start Timer
 			timer = new Timer();
 			timer.scheduleAtFixedRate(new TimeoutHandler(this), 0, (long) this.updateInterval);
+			System.out.println("timer set");
 			
-			while(!quit || in.available() > 0)
-			{
+			while(!quit)
+			{			
 				try
 				{
-					DvrPacket pkt1 = (DvrPacket) in.readObject();
-					
+					DvrPacket pkt1 = (DvrPacket)in.readObject();
+					// process HELLO
 					if (pkt1.type == DvrPacket.HELLO)
-						throw new Exception("Received HELLO when not expected");
-					//process ROUTE
-					else if (pkt1.type == DvrPacket.ROUTE) {
-						table = processDvr(pkt1);
-						System.out.println("need to process pkt");
-					}
-					//else if QUIT then calncel the timer and we are not active anymore
+						throw new Exception("HELLO not expected");
+					// process QUIT
 					else if (pkt1.type == DvrPacket.QUIT) {
 						timer.cancel();
 						quit = true;	
 						System.out.println("Quitting");
 					}
-				}catch(Exception e){
-					e.printStackTrace();
-				}	
+					// else process ROUTE and run routing algorithm
+					else if (pkt1.type == DvrPacket.ROUTE) {
+						System.out.println("processing pkt1");
+						processDvr(pkt1);
+					}
+					else
+						processDvr(pkt1);
+						
+				}catch(Exception e){  e.printStackTrace();  }	
+				System.out.println("looping");
 			}
 			cleanUp();
 			
@@ -175,53 +192,93 @@ public class Router {
 	}
 
 	
-	RtnTable processDvr (DvrPacket dvr) {
+	void processDvr (DvrPacket dvr) {
+		boolean change = false;
+		
+		// packet from server then update linkcost and mincost
 		if (dvr.sourceid == DvrPacket.SERVER) {
 			// update linkcost vector
 			linkcost = dvr.getMinCost();
+			for(int i = 0; i < linkcost.length; i++) {
+				System.out.println("process linkcost[" + i + "] = " + linkcost[i] );
+			}
 			
-			// update mincost vector of
-			int[] old = Arrays.copyOf(mincost[this.id], mincost[this.id].length);
+			// update mincost vector
+			int[] mincost_old = Arrays.copyOf(mincost[this.id], mincost[this.id].length);
 			mincost[id] = dvr.getMinCost();
 			
-			neighbours = new boolean[linkcost.length];		
-			for (int i = 0; i < linkcost.length; i++)
-			{
-				if (i != this.id && linkcost[i] != DvrPacket.INFINITY){
-					neighbours[i] = true;
+		}
+		// packet from another router, update mincost of source router
+		else {
+			mincost[dvr.sourceid] = dvr.getMinCost();
+		}
+		System.out.println("updating mincost");
+		
+		// update mincost
+		int distance;
+		int cost;
+		
+		for (int i = 0 ; i < nexthop.length; i++) {
+			// current router
+			if (i == this.id) {
+				distance = 0;
+			}
+			// not direct neighbour 
+			else if (nexthop[i] == this.id) {
+				distance = DvrPacket.INFINITY;
+			}
+			// direct neighbour 
+			else {
+				distance = mincost[this.id][i];
+			}
+			
+			// routing algorithm
+			for (int j = 0; j < nexthop.length; j++) {
+				cost = mincost[j][i] + linkcost[j];
+				
+				if ((cost < distance)) {
+					distance = cost;
+					nexthop[i] = j;
+					mincost[this.id][i] = distance;
+					change = true;
+				}
+			}
+		}
+		
+		for(int i = 0; i < nexthop.length; i++) {
+			System.out.println("mincost[" + i + "] = " + mincost[this.id][i]);
+			System.out.println("nexthop[" + i + "] = " + nexthop[i]);
+		}
+		
+		table = new RtnTable(mincost[this.id], nexthop);
+	}
+	
+	// send mincost vector to all directly connected neighbours
+	void updateNeighbours() {
+		try 
+		{
+			
+			// print to see outcome
+			for (int i = 0; i < linkcost.length; i++) {
+				for (int j = 0 ; j < linkcost.length; j++) {
+					System.out.println("mincost[" + i + "][" + j + "] = " + mincost[i][j]);
 				}
 			}
 			
-			// if min cost updated, notify neighbours and restart the timer
-			if (Arrays.equals(mincost[this.id], old)) {
-				resend();
-				timer.cancel();
-				timer = new Timer();
-				timer.scheduleAtFixedRate(new TimeoutHandler(this), 0, (long) this.updateInterval);
-			}
-		}
-		else {
-			// update min cost source router
-			mincost[dvr.sourceid] = dvr.getMinCost();
-		}
-		// something with the timer
-		return new RtnTable(mincost[this.id], nexthop);
-	}
-	
-	
-	void resend() {
-		try 
-		{
 			for (int i = 0; i < neighbours.length; i++) 
 			{
 				if (neighbours[i]) {
-					out.writeObject(new DvrPacket(this.id, i, DvrPacket.ROUTE, mincost[this.id]));
+					DvrPacket pkt = new DvrPacket(this.id, i, DvrPacket.ROUTE, mincost[this.id]);
+					out.writeObject(pkt);
+					out.flush();
 				}
 			}
 			
 		} catch (IOException e) {  e.printStackTrace();  }
 	}
 	
+	
+	// close all object writers and the socket
 	void cleanUp() {
 		try 
 		{

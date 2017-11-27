@@ -15,7 +15,7 @@ public class TimeoutHandler extends TimerTask {
 		try 
 		{
 			if (!router.quit) {
-				router.resend();
+				router.updateNeighbours();
 			}
 		} catch (Exception e) {  e.printStackTrace();  }
 	}
