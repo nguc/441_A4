@@ -28,10 +28,11 @@ import cpsc441.a4.shared.*;
  */
 public class Router {
 	
+	TimeoutHandler handler;
 	private String serverName;
 	private int serverPort;
 	private int id;
-	private int updateInterval;
+	int updateInterval;
 	Socket socket;
 	Timer timer;
 	RtnTable table;
@@ -121,7 +122,6 @@ public class Router {
 				else {
 					nexthop[i] = this.id;
 				}
-				//System.out.println("nexthop[" + i + "] = " + nexthop[i] );
 			}
 			
 			// initialize min cost matrix
@@ -135,40 +135,32 @@ public class Router {
 					mincost[i][j] = DvrPacket.INFINITY;	
 				}
 			}
-			// print to see outcome
-			/*for (int i = 0; i < linkcost.length; i++) {
-				for (int j = 0 ; j < linkcost.length; j++) {
-					System.out.println("mincost[" + i + "][" + j + "] = " + mincost[i][j]);
-				}
-			}*/
-			
-			// update table
-			table = new RtnTable(mincost[this.id], nexthop);
 			
 			// start Timer
 			timer = new Timer();
-			timer.scheduleAtFixedRate(new TimeoutHandler(this), 0, (long) this.updateInterval);
+			handler = new TimeoutHandler(this);
+			timer.schedule(handler , this.updateInterval);
 			
 			while(!quit)
 			{			
 				try
 				{
 					DvrPacket pkt1 = (DvrPacket)in.readObject();
+					
 					// process HELLO
 					if (pkt1.type == DvrPacket.HELLO){
-						System.out.println("Got hello pkt again");
 						throw new Exception("HELLO not expected");
 					}
+					
 					// process QUIT
 					else if (pkt1.type == DvrPacket.QUIT) {
 						System.out.println("Quitting");
 						timer.cancel();
 						quit = true;	
-						
 					}
-					// else process ROUTE and run routing algorithm
+					
+					// process ROUTE and run routing algorithm
 					else if (pkt1.type == DvrPacket.ROUTE) {
-						System.out.println("processing pkt1");
 						processDvr(pkt1);
 					}
 					updateMincost();
@@ -194,9 +186,6 @@ public class Router {
 		if (dvr.sourceid == DvrPacket.SERVER) {
 			// update linkcost vector
 			linkcost = dvr.getMinCost();
-			for(int i = 0; i < linkcost.length; i++) {
-				System.out.println("process linkcost[" + i + "] = " + linkcost[i] );
-			}
 			
 			// update nexthop
 			nexthop = new int[linkcost.length];
@@ -208,7 +197,6 @@ public class Router {
 				else {
 					nexthop[i] = this.id;
 				}
-				System.out.println("updated nexthop[" + i + "] = " + nexthop[i] );
 			}
 			
 		}
@@ -216,7 +204,6 @@ public class Router {
 		else {
 			mincost[dvr.sourceid] = dvr.getMinCost();
 		}
-		
 		updateMincost();
 	}
 		
@@ -227,6 +214,7 @@ public class Router {
 		int cost;
 		
 		for (int i = 0 ; i < nexthop.length; i++) {
+			
 			// current router
 			if (i == this.id) {
 				distance = 0;
@@ -248,18 +236,20 @@ public class Router {
 					distance = cost;
 					this.nexthop[i] = j;
 					this.mincost[this.id][i] = distance;
-					this.linkcost[i] = distance;
-					change = true;
+					change = true; // local min cost changed
 				}
 			}
 			
 		}
+		// if local mincost changes then update neighbours
 		if (change){
 			updateNeighbours();
+			this.handler.restart();
+			
 		}
 	}
 	
-	// send mincost vector to all directly connected neighbours
+	// send mincost vector to all directly connected neighbours and restarts timer
 	void updateNeighbours() {
 		try 
 		{			
@@ -270,8 +260,7 @@ public class Router {
 					out.writeObject(pkt);
 					out.flush();
 				}
-			}
-			
+			}	
 		} catch (IOException e) {  e.printStackTrace();  }
 	}
 	
